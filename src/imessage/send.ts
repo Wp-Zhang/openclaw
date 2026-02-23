@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { loadConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { convertMarkdownTables } from "../markdown/tables.js";
@@ -33,6 +34,112 @@ export type IMessageSendOpts = {
 export type IMessageSendResult = {
   messageId: string;
 };
+
+export type IMessageTapbackResult = {
+  success: boolean;
+  chatId: number;
+  reactionType: string;
+  reactionEmoji: string;
+};
+
+/**
+ * Map emoji to imsg reaction type
+ */
+function emojiToReactionType(emoji: string): string {
+  const mapping: Record<string, string> = {
+    "❤️": "love",
+    "👍": "like",
+    "👎": "dislike",
+    "😂": "laugh",
+    "‼️": "emphasis",
+    "❓": "question",
+  };
+  return mapping[emoji] || emoji; // Return emoji itself for custom reactions (iOS 17+)
+}
+
+/**
+ * Send a tapback reaction to the most recent message in a chat.
+ * Uses `imsg react` command (requires imsg >= 0.5.0).
+ */
+export async function sendTapbackReaction(
+  chatId: number,
+  emoji: string,
+  opts: Omit<IMessageSendOpts, "chatId"> = {},
+): Promise<IMessageTapbackResult> {
+  const cfg = opts.config ?? loadConfig();
+  const account =
+    opts.account ??
+    resolveIMessageAccount({
+      cfg,
+      accountId: opts.accountId,
+    });
+  const cliPath = opts.cliPath?.trim() || account.config.cliPath?.trim() || "imsg";
+  const dbPath = opts.dbPath?.trim() || account.config.dbPath?.trim();
+  const reactionType = emojiToReactionType(emoji);
+
+  const args = ["react", "--chat-id", String(chatId), "--reaction", reactionType];
+  if (dbPath) {
+    args.push("--db", dbPath);
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(cliPath, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (err) => {
+      reject(new Error(`Failed to spawn imsg react: ${err.message}`));
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`imsg react failed: ${stderr || stdout || `exit code ${code}`}`));
+        return;
+      }
+
+      // Try to parse JSON output if available
+      try {
+        const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]) as {
+            success?: boolean;
+            chat_id?: number;
+            reaction_type?: string;
+            reaction_emoji?: string;
+          };
+          resolve({
+            success: result.success ?? true,
+            chatId: result.chat_id ?? chatId,
+            reactionType: result.reaction_type ?? reactionType,
+            reactionEmoji: result.reaction_emoji ?? emoji,
+          });
+          return;
+        }
+      } catch {
+        // Ignore JSON parse errors, fall through to default response
+      }
+
+      // Default success response
+      resolve({
+        success: true,
+        chatId,
+        reactionType,
+        reactionEmoji: emoji,
+      });
+    });
+  });
+}
 
 const LEADING_REPLY_TAG_RE = /^\s*\[\[\s*reply_to\s*:\s*([^\]\n]+)\s*\]\]\s*/i;
 const MAX_REPLY_TO_ID_LENGTH = 256;
