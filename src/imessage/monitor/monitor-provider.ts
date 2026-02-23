@@ -13,6 +13,7 @@ import {
   type HistoryEntry,
 } from "../../auto-reply/reply/history.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
+import type { ReplyPayload } from "../../auto-reply/types.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
 import { loadConfig } from "../../config/config.js";
@@ -41,7 +42,7 @@ import { resolveIMessageAccount } from "../accounts.js";
 import { createIMessageRpcClient } from "../client.js";
 import { DEFAULT_IMESSAGE_PROBE_TIMEOUT_MS } from "../constants.js";
 import { probeIMessage } from "../probe.js";
-import { sendMessageIMessage } from "../send.js";
+import { sendMessageIMessage, sendTapbackReaction } from "../send.js";
 import { attachIMessageMonitorAbortHandler } from "./abort-handler.js";
 import { deliverReplies } from "./deliver.js";
 import {
@@ -298,6 +299,21 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     }
 
     const chatId = message.chat_id ?? undefined;
+
+    // Auto-react with tapback if configured (uses imsg react command, requires imsg >= 0.5.0)
+    const autoReact = imessageCfg.autoReact;
+    if (autoReact && decision.kind === "dispatch" && chatId) {
+      const emoji = typeof autoReact === "string" ? autoReact : "👍";
+      try {
+        await sendTapbackReaction(chatId, emoji, {
+          accountId: accountInfo.accountId,
+        });
+        logVerbose(`imessage: tapback reaction ${emoji} sent to chat ${chatId}`);
+      } catch (err) {
+        logVerbose(`imessage: tapback reaction failed: ${String(err)}`);
+      }
+    }
+
     if (decision.kind === "pairing") {
       const sender = (message.sender ?? "").trim();
       if (!sender) {
@@ -418,16 +434,26 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       },
     });
 
+    // Enable streaming output for real-time message delivery
+    const isStreamingEnabled = accountInfo.config.blockStreaming === true;
+
     const { queuedFinal } = await dispatchInboundMessage({
       ctx: ctxPayload,
       cfg,
       dispatcher,
       replyOptions: {
-        disableBlockStreaming:
-          typeof accountInfo.config.blockStreaming === "boolean"
-            ? !accountInfo.config.blockStreaming
-            : undefined,
+        disableBlockStreaming: !isStreamingEnabled,
         onModelSelected,
+        ...(isStreamingEnabled
+          ? {
+              onToolResult: (payload: ReplyPayload) => {
+                dispatcher.sendToolResult(payload);
+              },
+              onBlockReply: (payload: ReplyPayload) => {
+                dispatcher.sendBlockReply(payload);
+              },
+            }
+          : {}),
       },
     });
 
