@@ -927,6 +927,7 @@ export const IMessageAccountSchemaBase = z
       .optional(),
     heartbeat: ChannelHeartbeatVisibilitySchema,
     responsePrefix: z.string().optional(),
+    autoReact: z.union([z.boolean(), z.string()]).optional(),
   })
   .strict();
 

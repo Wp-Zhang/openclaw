@@ -79,6 +79,8 @@ export type IMessageAccountConfig = {
   heartbeat?: ChannelHeartbeatVisibilityConfig;
   /** Outbound response prefix override for this channel/account. */
   responsePrefix?: string;
+  /** Auto-react with emoji on incoming messages (simulates Discord reactions). Boolean for default 👍, or custom emoji string. */
+  autoReact?: boolean | string;
 };
 
 export type IMessageConfig = {
